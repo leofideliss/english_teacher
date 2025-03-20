@@ -14,16 +14,16 @@ func main() {
     if err != nil {
         log.Fatal("Error loading .env file")
     }
-
-    
+ 
     router := gin.Default()
+    
     router.GET("/ping", func(c *gin.Context) {
         c.JSON(200, gin.H{
             "message": "pong",
         })
     })
 
-    router.POST("/question", internal.ExecuteQuestion)
+    router.POST("/questions", internal.ExecuteQuestion)
     
     router.Run()
 }

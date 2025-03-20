@@ -1,8 +1,10 @@
 package internal
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -16,18 +18,22 @@ type Question struct {
 }
 
 type Answer struct {
-    Model              string    `json:"model"`
-    CreatedAt          string    `json:"created_at"`
-    Response           string    `json:"response"`
-    Done               bool      `json:"done"`
-    DoneReason         string    `json:"done_reason"`
-    Context            []int     `json:"context"`
-    TotalDuration      int64     `json:"total_duration"`
-    LoadDuration       int64     `json:"load_duration"`
-    PromptEvalCount    int       `json:"prompt_eval_count"`
-    PromptEvalDuration int64     `json:"prompt_eval_duration"`
-    EvalCount          int       `json:"eval_count"`
-    EvalDuration       int64     `json:"eval_duration"`
+    Model string `json:"model"`
+    CreatedAt string `json:"created_at"`
+    Response string `json:"response"`
+    Done bool `json:"done"`
+    DoneReason string `json:"done_reason"`
+    Context []int `json:"context"`
+    TotalDuration int64 `json:"total_duration"`
+    LoadDuration int64 `json:"load_duration"`
+    PromptEvalCount int `json:"prompt_eval_count"`
+    PromptEvalDuration int64 `json:"prompt_eval_duration"`
+    EvalCount int `json:"eval_count"`
+    EvalDuration int64 `json:"eval_duration"`
+}
+
+type PartialAnswer struct {
+	Response string `json:"response"`
 }
 
 type Response struct {
@@ -36,49 +42,82 @@ type Response struct {
     Data string `json:"data"`
 }
 
-func consultLLM(request *http.Request) Response {
-    payloadJson , errJson := prepareQuestion(request.Body)
+func consultLLM(request *http.Request) (io.ReadCloser , error) {
+    payloadJson , errJson := makePayloadLLM(request.Body)
     if errJson != nil {
-        return Response{Status:http.StatusBadRequest,Data:errJson.Error(),Success:false}
+        return nil,errJson
     }
-    
-    resp, err := http.Post(os.Getenv("URL_LLM"), "application/json", bytes.NewBuffer(payloadJson))
-	if err != nil {
-        return Response{Status:http.StatusBadRequest,Data:errJson.Error(),Success:false}
-	}
-	defer resp.Body.Close()
+
+    return postLLM(payloadJson)
+}
+
+func bindResponseToanswer(resp io.ReadCloser, err error) Response{
+    defer resp.Close()
     var answer Answer
-	decoder := json.NewDecoder(resp.Body)
-	err = decoder.Decode(&answer)
-	if err != nil {
-        return Response{Status:http.StatusBadRequest,Data:errJson.Error(),Success:false}
+    decoder := json.NewDecoder(resp)
+    err = decoder.Decode(&answer)
+    if err != nil {
+        return Response{Status:http.StatusBadRequest,Data:err.Error(),Success:false}
     }
     return Response{Status:http.StatusOK,Data:answer.Response,Success:true}
 }
 
-func ExecuteQuestion(g *gin.Context){
-    responseLLM  := consultLLM(g.Request)
-    g.JSON(responseLLM.Status,responseLLM.Data)
+func postLLM(payloadLLM []byte) (io.ReadCloser , error){
+    resp, err := http.Post(os.Getenv("URL_LLM"), "application/json", bytes.NewBuffer(payloadLLM))
+    if err != nil {
+        return nil, err
+    }
+    return resp.Body , nil
 }
 
-func prepareQuestion(body io.ReadCloser) ([]byte,error){
-	var question Question
-	decoder := json.NewDecoder(body)
-	if err := decoder.Decode(&question); err != nil {
-		return nil, err
-	}
+func ExecuteQuestion(g *gin.Context){
+    g.Header("Content-Type", "text/event-stream")
+	g.Header("Cache-Control", "no-cache")
+	g.Header("Connection", "keep-alive")
+    
+    responseLLM , err := consultLLM(g.Request)
+    if err != nil {
+        g.SSEvent("error", fmt.Sprintf("Erro na requisição: %v", err))
+    }
+    
+    reader := bufio.NewReader(responseLLM)
+
+	g.Stream(func(w io.Writer) bool {
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			fmt.Println("Stream finalizado:", err)
+			return false // Fim do stream
+		}
+        var partial PartialAnswer
+        _ = json.Unmarshal([]byte(line), &partial)
+		g.SSEvent("message", partial.Response)
+		return true // Continua lendo
+	})
+}
+
+func bindRequestToQuestion(body io.ReadCloser) (Question,error){
+    var question Question
+    decoder := json.NewDecoder(body)
+    if err := decoder.Decode(&question); err != nil {
+        return Question{}, err
+    }
+    return question , nil
+}
+
+func makePayloadLLM(body io.ReadCloser)([]byte , error){
+    question,err:= bindRequestToQuestion(body)
 
     stream , _ := strconv.ParseBool(os.Getenv("STREAM_LLM"))
     payload_llama := map[string]interface{}{
-		"model":  os.Getenv("MODEL_LLM"),
-		"prompt":   question.Text,
-		"stream": stream,
-	}
-    
+        "model": os.Getenv("MODEL_LLM"),
+        "prompt": question.Text,
+        "stream": stream,
+    }
+
     jsonData, err := json.Marshal(payload_llama)
-	if err != nil {
-		return nil , err
-	}
+    if err != nil {
+        return nil , err
+    }
 
     return jsonData , nil
 }
