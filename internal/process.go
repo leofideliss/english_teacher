@@ -34,7 +34,7 @@ type Answer struct {
 }
 
 type PartialAnswer struct {
-	Response string `json:"response"`
+	Response Message `json:"message"`
 }
 
 type Response struct {
@@ -90,15 +90,15 @@ func ExecuteQuestion(g *gin.Context){
 		}
         var partial PartialAnswer
         _ = json.Unmarshal([]byte(line), &partial)
-        response += partial.Response
-		g.SSEvent("message", partial.Response)
+        response += partial.Response.Content
+		g.SSEvent("message", partial.Response.Content)
 		return true // Continua lendo
 	})
     handleHistory("assistant",response)
 }
 
 func saveQuestion(value string){
-    redis.PushRedis("chat-4",value)
+    redis.PushRedis(os.Getenv("CURRENT_CHAT"),value)
 }
 
 func handleHistory(agent , key string){  
@@ -117,26 +117,17 @@ func bindRequestToQuestion(body io.ReadCloser) (Question,error){
 }
 
 func makePayloadLLM(body io.ReadCloser)([]byte , error){
-    //question,err:= bindRequestToQuestion(body)
-    result , _ := redis.RecuperarHistorico("chat-4",100)
-    jsonResult , _:= json.Marshal(result)
+    question,err:= bindRequestToQuestion(body)
+    result , _ := redis.RecuperarHistorico(os.Getenv("CURRENT_CHAT"),100)
+    result = append(result,map[string]string{"role":"user","content":question.Text})
+
     stream , _ := strconv.ParseBool(os.Getenv("STREAM_LLM"))
     payload_llama := map[string]interface{}{
         "model": os.Getenv("MODEL_LLM"),
         "stream": stream,
-        "messages": []map[string]interface{}{
-            {"role": "user", "content": "meu nome é leonardo"},
-            {"role": "assistant", "content": "Olá, Leonardo! É um prazer conhecer você. Como posso ajudar hoje? Você tem alguma pergunta ou precisa de ajuda com algo em particular? Estou aqui para ajudar."},
-            {"role": "user", "content": "qual foi a pergunta anterior ?"},
-            {"role": "assistant", "content": "Não tenho acesso à história de conversas anteriores, então não posso informar qual foi a pergunta anterior. Estou aqui para ajudá-lo com qualquer pergunta que você possa ter! Qual é a sua pergunta atual?"},
-            {"role": "user", "content": "qual é meu nome ?"},
-            {"role": "assistant", "content": "Desculpe, não posso ver seu nome. Somente posso interagir com você até que você me forneça informações sobre si mesmo, como seu nome ou outro detalhe pessoal. Quer compartilhar seu nome?"},
-            {"role": "user", "content": "meu nome"},
-            {"role": "assistant", "content": "Eu não sei o seu nome. Você pode me contar mais sobre você e eu posso tentar ajudá-lo?"},
-            {"role": "user", "content": "meu nome"},
-        },
+        "messages": result,
     }
-    fmt.Println(string(jsonResult))
+
     jsonData, err := json.Marshal(payload_llama)
     if err != nil {
         return nil , err

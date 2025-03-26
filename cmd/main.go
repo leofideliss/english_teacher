@@ -24,6 +24,8 @@ func main() {
     })
 
     router.POST("/questions", internal.ExecuteQuestion)
+    router.POST("/history", internal.GetHistory)
+
     
     router.Run()
 }
